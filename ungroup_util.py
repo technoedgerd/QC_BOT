@@ -1,5 +1,13 @@
 import os
-import pythoncom
+import platform
+
+def ungroup_shapes_in_ppt(*args, **kwargs):
+    # Windows only feature
+    if platform.system().lower() != "windows":
+        return None
+
+    import pythoncom  # Windows only
+    # keep your existing Windows ungroup code below this line
 import win32com.client
 
 
@@ -48,3 +56,4 @@ def ungroup_shapes_in_ppt(input_path, output_path):
     finally:
         ppt.Quit()
         pythoncom.CoUninitialize()
+
