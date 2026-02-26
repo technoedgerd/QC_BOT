@@ -7,4 +7,4 @@ sentence-transformers
 torch
 tk
 aspose.slides
-pywin32
+pywin32==311; sys_platform == "win32"
