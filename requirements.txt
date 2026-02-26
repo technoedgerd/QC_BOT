@@ -6,3 +6,4 @@ xlsxwriter
 sentence-transformers
 torch
 aspose-slides==24.11.0
+gunicorn
