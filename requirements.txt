@@ -5,4 +5,4 @@ openpyxl
 xlsxwriter
 sentence-transformers
 torch
-aspose-slides==24.5.0
+aspose-slides==24.11.0
