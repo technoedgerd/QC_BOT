@@ -1,0 +1,10 @@
+flask
+python-pptx
+pandas
+openpyxl
+xlsxwriter
+sentence-transformers
+torch
+tk
+aspose.slides
+pywin32
