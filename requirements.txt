@@ -6,5 +6,5 @@ xlsxwriter
 sentence-transformers
 torch
 tk
-aspose.slides
-pywin32==311; sys_platform == "win32"
+aspose-slides==24.5.0
+python-3.10.13
