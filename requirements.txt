@@ -6,4 +6,3 @@ xlsxwriter
 sentence-transformers
 torch
 aspose-slides==24.5.0
-python-3.10.13
