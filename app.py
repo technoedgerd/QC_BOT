@@ -1,4 +1,7 @@
-from ungroup_util import ungroup_shapes_in_ppt
+try:
+    from ungroup_util import ungroup_shapes_in_ppt
+except Exception:
+    ungroup_shapes_in_ppt = None
 from flask import Flask, render_template, request, send_file
 import os
 import pandas as pd
@@ -165,7 +168,19 @@ def process_files():
     file_b.save(path_b)
 
     ungrouped_path_b = os.path.join(UPLOAD_FOLDER, "ungrouped_" + filename_b)
+  import os
+import platform
+import shutil
+
+# Default: use the original file as "ungrouped" if ungrouping is not available
+ungrouped_path_b = os.path.join(UPLOAD_FOLDER, "ungrouped_" + filename_b)
+
+if platform.system().lower() == "windows" and ungroup_shapes_in_ppt:
+    # Windows only ungroup
     ungroup_shapes_in_ppt(path_b, ungrouped_path_b)
+else:
+    # Render Linux: just copy the file so the rest of your pipeline keeps working
+    shutil.copyfile(path_b, ungrouped_path_b)
 
     output_filename = f"{os.path.splitext(filename_b)[0]}_QC_Report.xlsx"
     output_path = os.path.join(OUTPUT_FOLDER, output_filename)
