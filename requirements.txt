@@ -5,6 +5,5 @@ openpyxl
 xlsxwriter
 sentence-transformers
 torch
-tk
 aspose-slides==24.5.0
 python-3.10.13
