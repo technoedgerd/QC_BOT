@@ -1,7 +1,18 @@
+# ---------------------------
+# Optional Windows-only ungroup
+# ---------------------------
 try:
     from ungroup_util import ungroup_shapes_in_ppt
 except Exception:
     ungroup_shapes_in_ppt = None
+
+# ---------------------------
+# Optional Windows-only chunking (win32com)
+# ---------------------------
+try:
+    from chunking_by_animation_win32 import run_chunking_qc_with_animation
+except Exception:
+    run_chunking_qc_with_animation = None
 
 from flask import Flask, render_template, request, send_file
 import os
@@ -13,11 +24,13 @@ from openpyxl import load_workbook
 from openpyxl.styles import PatternFill
 
 from animation_checker import run_animation_qc
-from chunking_by_animation_win32 import run_chunking_qc_with_animation
 from notes_validator import run_notes_validation
 from text_rules_validator import run_text_rules_validation
 from qc_points_generator import generate_qc_summary
 
+# ---------------------------
+# App config
+# ---------------------------
 app = Flask(__name__)
 
 UPLOAD_FOLDER = "uploads"
@@ -25,8 +38,14 @@ OUTPUT_FOLDER = "outputs"
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 os.makedirs(OUTPUT_FOLDER, exist_ok=True)
 
+ALLOWED_EXTENSIONS = {"pptx"}
 
-def clean_illegal_excel_chars(df):
+
+def allowed_file(filename: str) -> bool:
+    return "." in filename and filename.rsplit(".", 1)[1].lower() in ALLOWED_EXTENSIONS
+
+
+def clean_illegal_excel_chars(df: pd.DataFrame) -> pd.DataFrame:
     def clean_text(value):
         if isinstance(value, str):
             return "".join([c for c in value if 32 <= ord(c) <= 126 or ord(c) in (9, 10, 13)])
@@ -35,7 +54,7 @@ def clean_illegal_excel_chars(df):
     return df.applymap(clean_text)
 
 
-def update_font_validation_with_fallback(excel_path):
+def update_font_validation_with_fallback(excel_path: str) -> str:
     DEFAULT_STYLE_MAP = {
         ("Text Placeholder 2", "PLACEHOLDER (14)"): ("Queens Medium", 35),
         ("Text Placeholder 3", "PLACEHOLDER (14)"): ("HelveticaNowDisplay Medium", 27),
@@ -89,17 +108,20 @@ def update_font_validation_with_fallback(excel_path):
         font = str(font_cell.value or "").strip()
         size_val = size_cell.value
 
+        # Fill missing font from fallback map
         if not font:
             key = (shape_name, shape_type)
             fallback = DEFAULT_STYLE_MAP.get(key)
             if not fallback and shape_type == "TEXT_BOX (17)" and shape_name.lower().startswith("textbox"):
                 fallback = ("HelveticaNowDisplay Medium", 27)
+
             if fallback:
                 font, fallback_size = fallback
                 font_cell.value = font
                 if not size_val:
                     size_cell.value = fallback_size
 
+        # Validate font name and size
         if font not in allowed_fonts:
             if font:
                 font_cell.fill = orange_fill
@@ -113,6 +135,7 @@ def update_font_validation_with_fallback(excel_path):
             except (TypeError, ValueError):
                 size_cell.fill = red_fill
 
+        # Validate font colour
         font_color = str(font_color_cell.value or "").strip().upper()
         if font_color and font_color not in allowed_font_colors:
             font_color_cell.fill = yellow_fill
@@ -121,7 +144,7 @@ def update_font_validation_with_fallback(excel_path):
     return "Validation updated successfully."
 
 
-def color_slide_point_comments(excel_path):
+def color_slide_point_comments(excel_path: str) -> None:
     comment_color_map = {
         "Perfect match (copied)": "ff0000",
         "Chunked properly": "87E179",
@@ -153,7 +176,7 @@ def color_slide_point_comments(excel_path):
     wb.save(excel_path)
 
 
-def highlight_animations(excel_path):
+def highlight_animations(excel_path: str) -> None:
     wb = load_workbook(excel_path)
     if "Animation QC" not in wb.sheetnames:
         return
@@ -175,6 +198,30 @@ def highlight_animations(excel_path):
     wb.save(excel_path)
 
 
+def ensure_minimal_slide_point_sheets() -> tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Linux fallback when win32 chunking cannot run.
+    Keeps your workbook valid with the expected sheets.
+    """
+    df_slide_point = pd.DataFrame(
+        columns=[
+            "Slide Number",
+            "Point",
+            "Extracted Text",
+            "Matched VO",
+            "Similarity",
+            "Comment",
+        ]
+    )
+    df_summary = pd.DataFrame(
+        columns=[
+            "Metric",
+            "Value",
+        ]
+    )
+    return df_slide_point, df_summary
+
+
 @app.route("/")
 def index():
     return render_template("index.html")
@@ -182,9 +229,20 @@ def index():
 
 @app.route("/process", methods=["POST"])
 def process_files():
+    # Validate incoming files
+    if "file_a" not in request.files or "file_b" not in request.files:
+        return "Missing file(s). Please upload both File A and File B.", 400
+
     file_a = request.files["file_a"]
     file_b = request.files["file_b"]
 
+    if not file_a.filename or not file_b.filename:
+        return "Empty filename. Please select both PPTX files.", 400
+
+    if not allowed_file(file_a.filename) or not allowed_file(file_b.filename):
+        return "Only .pptx files are allowed.", 400
+
+    # Save uploads
     filename_a = secure_filename(file_a.filename)
     filename_b = secure_filename(file_b.filename)
 
@@ -202,39 +260,54 @@ def process_files():
     else:
         shutil.copyfile(path_b, ungrouped_path_b)
 
+    # Output file
     output_filename = f"{os.path.splitext(filename_b)[0]}_QC_Report.xlsx"
     output_path = os.path.join(OUTPUT_FOLDER, output_filename)
 
-    df_animation = run_animation_qc(ungrouped_path_b)
-    df_slide_point, df_summary = run_chunking_qc_with_animation(ungrouped_path_b)
-    df_notes_a, df_notes_b, df_cmp, df_qc = run_notes_validation(path_a, ungrouped_path_b)
-    df_text_rules = run_text_rules_validation(df_qc)
+    try:
+        # Run QC modules
+        df_animation = run_animation_qc(ungrouped_path_b)
 
-    df_slide_point = clean_illegal_excel_chars(df_slide_point)
-    df_summary = clean_illegal_excel_chars(df_summary)
-    df_animation = clean_illegal_excel_chars(df_animation)
-    df_notes_a = clean_illegal_excel_chars(df_notes_a)
-    df_notes_b = clean_illegal_excel_chars(df_notes_b)
-    df_cmp = clean_illegal_excel_chars(df_cmp)
-    df_qc = clean_illegal_excel_chars(df_qc)
-    df_text_rules = clean_illegal_excel_chars(df_text_rules)
+        if run_chunking_qc_with_animation:
+            df_slide_point, df_summary = run_chunking_qc_with_animation(ungrouped_path_b)
+        else:
+            df_slide_point, df_summary = ensure_minimal_slide_point_sheets()
 
-    with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
-        df_slide_point.to_excel(writer, sheet_name="Slide Point Analysis", index=False)
-        df_summary.to_excel(writer, sheet_name="Summary Review", index=False)
-        df_animation.to_excel(writer, sheet_name="Animation QC", index=False)
-        df_notes_a.to_excel(writer, sheet_name="File A Notes", index=False)
-        df_notes_b.to_excel(writer, sheet_name="File B Notes", index=False)
-        df_cmp.to_excel(writer, sheet_name="Comparison Results", index=False)
-        df_qc.to_excel(writer, sheet_name="Quality Check", index=False)
-        df_text_rules.to_excel(writer, sheet_name="Text Rules Check", index=False)
+        df_notes_a, df_notes_b, df_cmp, df_qc = run_notes_validation(path_a, ungrouped_path_b)
+        df_text_rules = run_text_rules_validation(df_qc)
 
-    color_slide_point_comments(output_path)
-    highlight_animations(output_path)
-    update_font_validation_with_fallback(output_path)
-    generate_qc_summary(output_path)
+        # Clean dataframes for Excel
+        df_slide_point = clean_illegal_excel_chars(df_slide_point)
+        df_summary = clean_illegal_excel_chars(df_summary)
+        df_animation = clean_illegal_excel_chars(df_animation)
+        df_notes_a = clean_illegal_excel_chars(df_notes_a)
+        df_notes_b = clean_illegal_excel_chars(df_notes_b)
+        df_cmp = clean_illegal_excel_chars(df_cmp)
+        df_qc = clean_illegal_excel_chars(df_qc)
+        df_text_rules = clean_illegal_excel_chars(df_text_rules)
 
-    return send_file(output_path, as_attachment=True)
+        # Write excel
+        with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
+            df_slide_point.to_excel(writer, sheet_name="Slide Point Analysis", index=False)
+            df_summary.to_excel(writer, sheet_name="Summary Review", index=False)
+            df_animation.to_excel(writer, sheet_name="Animation QC", index=False)
+            df_notes_a.to_excel(writer, sheet_name="File A Notes", index=False)
+            df_notes_b.to_excel(writer, sheet_name="File B Notes", index=False)
+            df_cmp.to_excel(writer, sheet_name="Comparison Results", index=False)
+            df_qc.to_excel(writer, sheet_name="Quality Check", index=False)
+            df_text_rules.to_excel(writer, sheet_name="Text Rules Check", index=False)
+
+        # Post-processing
+        color_slide_point_comments(output_path)
+        highlight_animations(output_path)
+        update_font_validation_with_fallback(output_path)
+        generate_qc_summary(output_path)
+
+        return send_file(output_path, as_attachment=True)
+
+    except Exception as e:
+        # Basic error output (safe)
+        return f"Processing failed: {str(e)}", 500
 
 
 if __name__ == "__main__":
