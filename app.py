@@ -2,30 +2,38 @@ try:
     from ungroup_util import ungroup_shapes_in_ppt
 except Exception:
     ungroup_shapes_in_ppt = None
+
 from flask import Flask, render_template, request, send_file
 import os
+import platform
+import shutil
 import pandas as pd
 from werkzeug.utils import secure_filename
 from openpyxl import load_workbook
 from openpyxl.styles import PatternFill
+
 from animation_checker import run_animation_qc
 from chunking_by_animation_win32 import run_chunking_qc_with_animation
 from notes_validator import run_notes_validation
 from text_rules_validator import run_text_rules_validation
-from qc_points_generator import generate_qc_summary  # New import
+from qc_points_generator import generate_qc_summary
 
 app = Flask(__name__)
-UPLOAD_FOLDER = 'uploads'
-OUTPUT_FOLDER = 'outputs'
+
+UPLOAD_FOLDER = "uploads"
+OUTPUT_FOLDER = "outputs"
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 os.makedirs(OUTPUT_FOLDER, exist_ok=True)
+
 
 def clean_illegal_excel_chars(df):
     def clean_text(value):
         if isinstance(value, str):
-            return ''.join([c for c in value if 32 <= ord(c) <= 126 or ord(c) in (9, 10, 13)])
+            return "".join([c for c in value if 32 <= ord(c) <= 126 or ord(c) in (9, 10, 13)])
         return value
+
     return df.applymap(clean_text)
+
 
 def update_font_validation_with_fallback(excel_path):
     DEFAULT_STYLE_MAP = {
@@ -52,7 +60,14 @@ def update_font_validation_with_fallback(excel_path):
     header = [cell.value for cell in next(ws.iter_rows(min_row=1, max_row=1))]
     col_map = {name: idx for idx, name in enumerate(header)}
 
-    required_cols = ["Font Name", "Font Size", "Shape Name / Table Cell", "Shape Type", "Extracted Text", "Font Color Hex"]
+    required_cols = [
+        "Font Name",
+        "Font Size",
+        "Shape Name / Table Cell",
+        "Shape Type",
+        "Extracted Text",
+        "Font Color Hex",
+    ]
     if not all(col in col_map for col in required_cols):
         return "Missing required columns."
 
@@ -105,14 +120,16 @@ def update_font_validation_with_fallback(excel_path):
     wb.save(excel_path)
     return "Validation updated successfully."
 
+
 def color_slide_point_comments(excel_path):
     comment_color_map = {
         "Perfect match (copied)": "ff0000",
         "Chunked properly": "87E179",
         "No strong match": "FF9999",
         "Partially matching": "9ADFE6",
-        "No VO content": "8B0000"
+        "No VO content": "8B0000",
     }
+
     wb = load_workbook(excel_path)
     if "Slide Point Analysis" not in wb.sheetnames:
         return
@@ -127,9 +144,14 @@ def color_slide_point_comments(excel_path):
         cell = row[0]
         comment = str(cell.value).strip() if cell.value else ""
         if comment in comment_color_map:
-            cell.fill = PatternFill(start_color=comment_color_map[comment], end_color=comment_color_map[comment], fill_type="solid")
+            cell.fill = PatternFill(
+                start_color=comment_color_map[comment],
+                end_color=comment_color_map[comment],
+                fill_type="solid",
+            )
 
     wb.save(excel_path)
+
 
 def highlight_animations(excel_path):
     wb = load_workbook(excel_path)
@@ -152,35 +174,33 @@ def highlight_animations(excel_path):
 
     wb.save(excel_path)
 
-@app.route('/')
-def index():
-    return render_template('index.html')
 
-@app.route('/process', methods=['POST'])
+@app.route("/")
+def index():
+    return render_template("index.html")
+
+
+@app.route("/process", methods=["POST"])
 def process_files():
-    file_a = request.files['file_a']
-    file_b = request.files['file_b']
+    file_a = request.files["file_a"]
+    file_b = request.files["file_b"]
+
     filename_a = secure_filename(file_a.filename)
     filename_b = secure_filename(file_b.filename)
+
     path_a = os.path.join(UPLOAD_FOLDER, filename_a)
     path_b = os.path.join(UPLOAD_FOLDER, filename_b)
+
     file_a.save(path_a)
     file_b.save(path_b)
 
+    # Linux-safe ungroup fallback
     ungrouped_path_b = os.path.join(UPLOAD_FOLDER, "ungrouped_" + filename_b)
-  import os
-import platform
-import shutil
 
-# Default: use the original file as "ungrouped" if ungrouping is not available
-ungrouped_path_b = os.path.join(UPLOAD_FOLDER, "ungrouped_" + filename_b)
-
-if platform.system().lower() == "windows" and ungroup_shapes_in_ppt:
-    # Windows only ungroup
-    ungroup_shapes_in_ppt(path_b, ungrouped_path_b)
-else:
-    # Render Linux: just copy the file so the rest of your pipeline keeps working
-    shutil.copyfile(path_b, ungrouped_path_b)
+    if platform.system().lower() == "windows" and ungroup_shapes_in_ppt:
+        ungroup_shapes_in_ppt(path_b, ungrouped_path_b)
+    else:
+        shutil.copyfile(path_b, ungrouped_path_b)
 
     output_filename = f"{os.path.splitext(filename_b)[0]}_QC_Report.xlsx"
     output_path = os.path.join(OUTPUT_FOLDER, output_filename)
@@ -212,11 +232,12 @@ else:
     color_slide_point_comments(output_path)
     highlight_animations(output_path)
     update_font_validation_with_fallback(output_path)
-
-    #  Add new sheet summarizing all QC issues
     generate_qc_summary(output_path)
 
     return send_file(output_path, as_attachment=True)
 
-if __name__ == '__main__':
-    app.run(debug=True)
+
+if __name__ == "__main__":
+    # Render uses PORT env var
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port, debug=False)
